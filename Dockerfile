@@ -25,6 +25,13 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     libxss1 \
     libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-xinerama0 \
+    libxcb-xkb1 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libpango-1.0-0 \

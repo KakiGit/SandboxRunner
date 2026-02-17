@@ -74,7 +74,7 @@ cmd_start() {
 
     # GPU access for hardware acceleration
     if [ -d /dev/dri ]; then
-        PODMAN_ARGS+=(--device /dev/dri)
+        PODMAN_ARGS+=(--device /dev/dri --group-add keep-groups)
     fi
 
     # PulseAudio for sound support
