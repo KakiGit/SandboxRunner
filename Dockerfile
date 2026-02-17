@@ -57,10 +57,25 @@ RUN apt-get update && apt-get install -y wget gnupg \
     && apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
+# Persistent mode: VNC server and lightweight window manager
+RUN apt-get update && apt-get install -y \
+    tigervnc-standalone-server \
+    tigervnc-common \
+    openbox \
+    obconf \
+    xterm \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN locale-gen en_US.UTF-8 && locale-gen zh_CN.UTF-8
 ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
+
+# Install packages from external_app folder
+COPY external_app/ /tmp/external_app/
+RUN apt-get update \
+    && apt-get install -y /tmp/external_app/*.deb \
+    && rm -rf /tmp/external_app /var/lib/apt/lists/*
 
 ARG USERNAME=user
 ARG USER_UID=1000
@@ -73,6 +88,9 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 
 COPY start-app.sh /usr/local/bin/start-app.sh
 RUN chmod +x /usr/local/bin/start-app.sh
+
+COPY start-persistent.sh /usr/local/bin/start-persistent.sh
+RUN chmod +x /usr/local/bin/start-persistent.sh
 
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
