@@ -83,8 +83,10 @@ cmd_start() {
         PODMAN_ARGS+=(-v "$PULSE_SOCKET:/tmp/pulse-native:rw" -e PULSE_SERVER=unix:/tmp/pulse-native)
     fi
 
-    # Named volume to persist home directory across container recreations
-    PODMAN_ARGS+=(-v ubuntu-desktop-home:/home/user)
+    # Bind-mount local home directory into the container
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mkdir -p "$SCRIPT_DIR/home"
+    PODMAN_ARGS+=(-v "$SCRIPT_DIR/home:/home:rw")
 
     podman run "${PODMAN_ARGS[@]}" \
         --entrypoint /usr/local/bin/start-persistent.sh \
