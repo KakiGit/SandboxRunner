@@ -746,7 +746,8 @@ case "${1:-}" in
     logs)    shift; cmd_logs "$@" ;;
     deploy)    shift; cmd_deploy "$@" ;;
     redeploy)  shift; cmd_redeploy "$@" ;;
+    direct)  shift; cmd_direct "$@" ;;
     -h|--help)  show_help ;;
     "")         show_help ;;
-    *)          cmd_direct "$@" ;;
+    *)          show_help ;;
 esac

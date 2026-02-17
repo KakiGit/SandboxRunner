@@ -55,8 +55,14 @@ Stop the desktop (state is preserved):
 Run a single GUI app with X11 forwarding (no persistence):
 
 ```bash
-./run-desktop-app.sh firefox
-./run-desktop-app.sh xeyes
+./run-desktop-app.sh direct firefox
+./run-desktop-app.sh direct xeyes
+```
+
+Open an interactive shell in direct mode:
+
+```bash
+./run-desktop-app.sh direct --shell
 ```
 
 ### Remote Deployment
@@ -106,6 +112,7 @@ Redeploy (stop, re-sync, rebuild, restart):
 | `logs` | Show container logs |
 | `deploy <user@host>` | Sync files, build image, and start on a remote host |
 | `redeploy <user@host>` | Stop, re-sync, rebuild, and restart on a remote host |
+| `direct <app>` | Run a single GUI app with X11 forwarding (no persistence) |
 
 ### Options
 
@@ -113,6 +120,7 @@ Redeploy (stop, re-sync, rebuild, restart):
 |--------|-------------|
 | `-b, --build` | Force rebuild the container image |
 | `-n, --name NAME` | Custom container name |
+| `-s, --shell` | Open an interactive shell (direct mode only) |
 | `-H, --host HOST` | Execute the command on a remote host via SSH |
 | `--vnc-port PORT` | VNC port (default: `5901`) |
 | `--vnc-password PASS` | VNC password (default: `ubuntu`) |
