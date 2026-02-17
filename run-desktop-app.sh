@@ -373,6 +373,134 @@ cmd_deploy() {
     echo "========================================="
 }
 
+cmd_redeploy() {
+    local REMOTE_HOST=""
+    local REMOTE_DIR="~/vol_ubuntu"
+    local VNC_PORT=${VNC_PORT:-5901}
+    local VNC_PASSWORD=${VNC_PASSWORD:-ubuntu}
+    local VNC_GEOMETRY=${VNC_GEOMETRY:-1920x1080}
+    local SSH_OPTS=()
+    local APP_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --vnc-port)           VNC_PORT="$2"; shift 2 ;;
+            --vnc-password)       VNC_PASSWORD="$2"; shift 2 ;;
+            --vnc-geometry)       VNC_GEOMETRY="$2"; shift 2 ;;
+            --remote-dir)         REMOTE_DIR="$2"; shift 2 ;;
+            -n|--name)            PERSISTENT_CONTAINER="$2"; shift 2 ;;
+            -o|--ssh-opt)         SSH_OPTS+=(-o "$2"); shift 2 ;;
+            -i|--identity)        SSH_OPTS+=(-i "$2"); shift 2 ;;
+            -p|--port)            SSH_OPTS+=(-p "$2"); shift 2 ;;
+            -*)                   echo "Unknown option: $1"; exit 1 ;;
+            *)
+                if [ -z "$REMOTE_HOST" ]; then
+                    REMOTE_HOST="$1"
+                else
+                    APP_ARGS+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$REMOTE_HOST" ]; then
+        echo "Usage: ./run-desktop-app.sh redeploy <user@host> [options] [app]"
+        echo ""
+        echo "Stops the running container, re-syncs files, rebuilds the image,"
+        echo "and starts a fresh container on the remote host."
+        echo ""
+        echo "Options:"
+        echo "  --remote-dir DIR      Remote directory (default: ~/vol_ubuntu)"
+        echo "  --vnc-port PORT       VNC port (default: 5901)"
+        echo "  --vnc-password PASS   VNC password (default: ubuntu)"
+        echo "  --vnc-geometry WxH    Resolution (default: 1920x1080)"
+        echo "  -n, --name NAME       Container name"
+        echo "  -i, --identity KEY    SSH identity file"
+        echo "  -p, --port PORT       SSH port"
+        echo "  -o, --ssh-opt OPT     Extra SSH option"
+        echo ""
+        echo "Examples:"
+        echo "  ./run-desktop-app.sh redeploy user@myserver"
+        echo "  ./run-desktop-app.sh redeploy user@myserver firefox"
+        echo "  ./run-desktop-app.sh redeploy user@myserver -i ~/.ssh/id_rsa"
+        exit 1
+    fi
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    echo "=== Redeploying to $REMOTE_HOST ==="
+
+    # Step 1: Stop and remove existing container on remote
+    echo ""
+    echo "[1/4] Stopping and removing existing container on remote..."
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
+        "podman stop $PERSISTENT_CONTAINER 2>/dev/null; podman rm $PERSISTENT_CONTAINER 2>/dev/null; echo '  Container cleared.'" \
+        || true
+
+    # Step 2: Sync project files to remote host
+    echo ""
+    echo "[2/4] Syncing project files to ${REMOTE_HOST}:${REMOTE_DIR} ..."
+
+    local RSYNC_SSH_CMD="ssh"
+    if [ ${#SSH_OPTS[@]} -gt 0 ]; then
+        RSYNC_SSH_CMD="ssh ${SSH_OPTS[*]}"
+    fi
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p $REMOTE_DIR"
+
+    rsync -az --delete \
+        --exclude '.git' \
+        --exclude '.gitignore' \
+        -e "$RSYNC_SSH_CMD" \
+        "$SCRIPT_DIR/" "${REMOTE_HOST}:${REMOTE_DIR}/"
+
+    echo "  Files synced."
+
+    # Step 3: Rebuild image on remote host
+    echo ""
+    echo "[3/4] Rebuilding container image on remote host..."
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd $REMOTE_DIR && podman build -t $IMAGE_NAME ."
+    echo "  Image rebuilt."
+
+    # Step 4: Start fresh container on remote host
+    echo ""
+    echo "[4/4] Starting fresh container on remote host..."
+
+    local START_CMD="cd $REMOTE_DIR && ./run-desktop-app.sh start"
+    START_CMD+=" --vnc-port $VNC_PORT"
+    START_CMD+=" --vnc-password $VNC_PASSWORD"
+    START_CMD+=" --vnc-geometry $VNC_GEOMETRY"
+    START_CMD+=" -n $PERSISTENT_CONTAINER"
+    if [ ${#APP_ARGS[@]} -gt 0 ]; then
+        START_CMD+=" ${APP_ARGS[*]}"
+    fi
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$START_CMD"
+
+    local _H_OPTS=""
+    if [ ${#SSH_OPTS[@]} -gt 0 ]; then
+        for _opt in "${SSH_OPTS[@]}"; do
+            _H_OPTS+=" $_opt"
+        done
+    fi
+
+    echo ""
+    echo "========================================="
+    echo " Redeployed to $REMOTE_HOST"
+    echo "========================================="
+    echo ""
+    echo " To connect, set up an SSH tunnel and VNC:"
+    echo ""
+    echo "   ssh ${SSH_OPTS[*]} -L ${VNC_PORT}:localhost:${VNC_PORT} $REMOTE_HOST"
+    echo "   vncviewer localhost:${VNC_PORT}"
+    echo ""
+    echo " VNC password: $VNC_PASSWORD"
+    echo "========================================="
+}
+
 # --- Direct X11 mode (original behavior) ---
 
 cmd_direct() {
@@ -502,7 +630,8 @@ Remote execution (run any command on a remote host via SSH):
     -o, --ssh-opt OPT     Extra SSH option (e.g. StrictHostKeyChecking=no)
 
 Remote deployment (deploy and start on a remote host via SSH):
-  deploy <user@host> [app]   Sync files, build image, and start on remote
+  deploy <user@host> [app]     Sync files, build image, and start on remote
+  redeploy <user@host> [app]   Stop container, re-sync, rebuild, and restart
 
   Deploy options:
     -b, --build           Force rebuild the image on remote
@@ -527,6 +656,10 @@ Examples:
   ./run-desktop-app.sh deploy user@myserver firefox
   ./run-desktop-app.sh deploy user@myserver -b --vnc-port 5902
   ./run-desktop-app.sh deploy user@myserver -i ~/.ssh/id_rsa
+
+  # Redeploy to remote (stop, re-sync, rebuild, restart):
+  ./run-desktop-app.sh redeploy user@myserver
+  ./run-desktop-app.sh redeploy user@myserver firefox
 
   # Manage remote container from your local machine (after deploy):
   ./run-desktop-app.sh start -H user@myserver           # Start
@@ -621,7 +754,8 @@ case "${1:-}" in
     shell)   shift; cmd_shell "$@" ;;
     status)  shift; cmd_status "$@" ;;
     logs)    shift; cmd_logs "$@" ;;
-    deploy)  shift; cmd_deploy "$@" ;;
+    deploy)    shift; cmd_deploy "$@" ;;
+    redeploy)  shift; cmd_redeploy "$@" ;;
     -h|--help)  show_help ;;
     "")         show_help ;;
     *)          cmd_direct "$@" ;;
