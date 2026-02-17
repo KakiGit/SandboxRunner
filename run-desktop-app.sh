@@ -68,9 +68,8 @@ cmd_start() {
         -e VNC_PASSWORD="$VNC_PASSWORD"
         -e VNC_GEOMETRY="$VNC_GEOMETRY"
         -e DISPLAY_NUM=1
-        -p "${VNC_PORT}:${VNC_PORT}"
+        -p "127.0.0.1:${VNC_PORT}:${VNC_PORT}"
         --security-opt label=type:container_runtime_t
-        --userns=keep-id
     )
 
     # GPU access for hardware acceleration
@@ -405,7 +404,6 @@ cmd_direct() {
         -e DISPLAY="$DISPLAY"
         -e LIBGL_ALWAYS_SOFTWARE=1
         --security-opt label=type:container_runtime_t
-        --userns=keep-id
     )
 
     # Detect if DISPLAY is TCP-based (e.g. SSH X11 forwarding: "localhost:10.0")
@@ -416,12 +414,16 @@ cmd_direct() {
         PODMAN_ARGS+=(-v /tmp/.X11-unix:/tmp/.X11-unix:rw)
     fi
 
-    # Share Xauthority for X11 authentication
+    # Create a container-readable copy of Xauthority with a wildcard cookie.
+    # Without --userns=keep-id the container UID differs from the host UID,
+    # so we cannot simply bind-mount the original file (mode 600, wrong owner).
     XAUTH_FILE="${XAUTHORITY:-$HOME/.Xauthority}"
-    if [ -f "$XAUTH_FILE" ]; then
-        PODMAN_ARGS+=(-v "$XAUTH_FILE:$HOME/.Xauthority:ro" -e XAUTHORITY="$HOME/.Xauthority")
-    elif [ -n "$XAUTHORITY" ]; then
-        PODMAN_ARGS+=(-v "$XAUTHORITY:$XAUTHORITY:ro" -e XAUTHORITY="$XAUTHORITY")
+    XAUTH_TMP=""
+    if [ -f "$XAUTH_FILE" ] && command -v xauth &>/dev/null; then
+        XAUTH_TMP=$(mktemp "/tmp/.xauth-container-XXXXXX")
+        xauth nlist "$DISPLAY" 2>/dev/null | sed -e 's/^..../ffff/' | xauth -f "$XAUTH_TMP" nmerge - 2>/dev/null
+        chmod 644 "$XAUTH_TMP"
+        PODMAN_ARGS+=(-v "$XAUTH_TMP:/tmp/.xauth:ro" -e XAUTHORITY=/tmp/.xauth)
     fi
 
     # PulseAudio for sound support
@@ -435,12 +437,19 @@ cmd_direct() {
         PODMAN_ARGS+=(--device /dev/dri)
     fi
 
+    run_and_cleanup() {
+        podman run "$@"
+        local rc=$?
+        [ -n "$XAUTH_TMP" ] && rm -f "$XAUTH_TMP"
+        return $rc
+    }
+
     if $SHELL_MODE; then
         echo "Starting interactive shell in container..."
-        podman run -it "${PODMAN_ARGS[@]}" "$IMAGE_NAME" /bin/bash
+        run_and_cleanup -it "${PODMAN_ARGS[@]}" "$IMAGE_NAME" /bin/bash
     elif [ ${#APP_ARGS[@]} -gt 0 ]; then
         echo "Starting ${APP_ARGS[0]} in container..."
-        podman run -it "${PODMAN_ARGS[@]}" "$IMAGE_NAME" "${APP_ARGS[@]}"
+        run_and_cleanup -it "${PODMAN_ARGS[@]}" "$IMAGE_NAME" "${APP_ARGS[@]}"
     else
         show_help
         exit 1

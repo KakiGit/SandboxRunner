@@ -6,6 +6,13 @@ VNC_PORT=$((5900 + DISPLAY_NUM))
 VNC_GEOMETRY=${VNC_GEOMETRY:-1920x1080}
 export DISPLAY=:${DISPLAY_NUM}
 
+# Fix home directory ownership if the volume was created under a different
+# user-namespace mapping (e.g. switching away from --userns=keep-id).
+if [ "$(stat -c %u "$HOME")" != "$(id -u)" ]; then
+    echo "Fixing home directory ownership..."
+    sudo chown -R "$(id -u):$(id -g)" "$HOME"
+fi
+
 # Set up VNC password
 mkdir -p ~/.vnc
 echo "${VNC_PASSWORD:-ubuntu}" | vncpasswd -f > ~/.vnc/passwd
