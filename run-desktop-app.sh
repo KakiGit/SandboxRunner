@@ -206,6 +206,9 @@ cmd_status() {
         echo "To launch more apps:  ./run-desktop-app.sh run <app>"
         echo "To open a shell:      ./run-desktop-app.sh shell"
         echo "To stop:              ./run-desktop-app.sh stop"
+        echo ""
+        echo "From a remote machine, add -H <host> to any command:"
+        echo "  ./run-desktop-app.sh status -H user@this-host"
     fi
 }
 
@@ -340,6 +343,13 @@ cmd_deploy() {
 
     ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$START_CMD"
 
+    local _H_OPTS=""
+    if [ ${#SSH_OPTS[@]} -gt 0 ]; then
+        for _opt in "${SSH_OPTS[@]}"; do
+            _H_OPTS+=" $_opt"
+        done
+    fi
+
     echo ""
     echo "========================================="
     echo " Deployed to $REMOTE_HOST"
@@ -353,9 +363,11 @@ cmd_deploy() {
     echo " VNC password: $VNC_PASSWORD"
     echo ""
     echo " To manage the remote container:"
-    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh status'"
-    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh run <app>'"
-    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh stop'"
+    echo "   ./run-desktop-app.sh status -H $REMOTE_HOST${_H_OPTS}"
+    echo "   ./run-desktop-app.sh run -H $REMOTE_HOST${_H_OPTS} <app>"
+    echo "   ./run-desktop-app.sh stop -H $REMOTE_HOST${_H_OPTS}"
+    echo "   ./run-desktop-app.sh shell -H $REMOTE_HOST${_H_OPTS}"
+    echo "   ./run-desktop-app.sh logs -H $REMOTE_HOST${_H_OPTS}"
     echo "========================================="
 }
 
@@ -477,6 +489,16 @@ Persistent mode (VNC desktop — survives SSH disconnects):
     --vnc-password PASS   VNC password (default: ubuntu)
     --vnc-geometry WxH    Screen resolution (default: 1920x1080)
 
+Remote execution (run any command on a remote host via SSH):
+  -H, --host HOST   Run the command on a remote host instead of locally
+                     (requires prior 'deploy' to sync files to the remote)
+
+  Remote options (used with -H):
+    --remote-dir DIR      Remote directory (default: ~/vol_ubuntu)
+    -i, --identity KEY    SSH identity file
+    -p, --port PORT       SSH port
+    -o, --ssh-opt OPT     Extra SSH option (e.g. StrictHostKeyChecking=no)
+
 Remote deployment (deploy and start on a remote host via SSH):
   deploy <user@host> [app]   Sync files, build image, and start on remote
 
@@ -499,15 +521,28 @@ Direct X11 mode (requires X11 forwarding, no persistence):
   -n, --name NAME  Custom container name
 
 Examples:
-  # Remote deployment (one command from local machine):
+  # Deploy to remote (first time — syncs files, builds image, starts):
   ./run-desktop-app.sh deploy user@myserver firefox
   ./run-desktop-app.sh deploy user@myserver -b --vnc-port 5902
   ./run-desktop-app.sh deploy user@myserver -i ~/.ssh/id_rsa
-  # Then connect:
+
+  # Manage remote container from your local machine (after deploy):
+  ./run-desktop-app.sh start -H user@myserver           # Start
+  ./run-desktop-app.sh stop -H user@myserver             # Stop
+  ./run-desktop-app.sh stop --rm -H user@myserver        # Stop and remove
+  ./run-desktop-app.sh run -H user@myserver firefox      # Launch app
+  ./run-desktop-app.sh shell -H user@myserver            # Open remote shell
+  ./run-desktop-app.sh status -H user@myserver           # Check status
+  ./run-desktop-app.sh logs -H user@myserver             # View logs
+
+  # Remote with SSH options:
+  ./run-desktop-app.sh status -H user@myserver -i ~/.ssh/id_rsa -p 2222
+
+  # Connect VNC:
   ssh -L 5901:localhost:5901 user@myserver
   vncviewer localhost:5901
 
-  # Persistent mode (recommended for remote SSH):
+  # Persistent mode (local):
   ./run-desktop-app.sh start firefox             # Start desktop with firefox
   ./run-desktop-app.sh run chromium-browser       # Launch another app
   ./run-desktop-app.sh shell                      # Open a shell
@@ -519,13 +554,61 @@ Examples:
   ./run-desktop-app.sh --build xeyes              # Build and run xeyes
 
 Workflow for remote SSH:
-  [remote]  ./run-desktop-app.sh start firefox
+  [local]   ./run-desktop-app.sh deploy user@remote-host firefox
   [local]   ssh -L 5901:localhost:5901 user@remote-host
   [local]   vncviewer localhost:5901
   # Disconnect SSH any time — apps keep running
   # Reconnect SSH, re-tunnel, re-attach VNC — same state
+  # Manage remotely:
+  [local]   ./run-desktop-app.sh status -H user@remote-host
+  [local]   ./run-desktop-app.sh run -H user@remote-host chromium-browser
+  [local]   ./run-desktop-app.sh stop -H user@remote-host
 HELP
 }
+
+# --- Remote execution via -H/--host ---
+
+_has_remote=false
+for _a in "$@"; do
+    [[ "$_a" == "-H" || "$_a" == "--host" ]] && _has_remote=true && break
+done
+
+if $_has_remote; then
+    _REMOTE_HOST=""
+    _REMOTE_DIR="~/vol_ubuntu"
+    _REMOTE_SSH_OPTS=()
+    _CMD_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -H|--host)       _REMOTE_HOST="$2"; shift 2 ;;
+            --remote-dir)    _REMOTE_DIR="$2"; shift 2 ;;
+            -i|--identity)   _REMOTE_SSH_OPTS+=(-i "$2"); shift 2 ;;
+            -p|--port)       _REMOTE_SSH_OPTS+=(-p "$2"); shift 2 ;;
+            -o|--ssh-opt)    _REMOTE_SSH_OPTS+=(-o "$2"); shift 2 ;;
+            *)               _CMD_ARGS+=("$1"); shift ;;
+        esac
+    done
+
+    if [ -z "$_REMOTE_HOST" ]; then
+        echo "Error: -H/--host requires a host argument"
+        exit 1
+    fi
+
+    _REMOTE_CMD="cd ${_REMOTE_DIR} && ./run-desktop-app.sh"
+    for _arg in "${_CMD_ARGS[@]}"; do
+        _REMOTE_CMD+=" $(printf '%q' "$_arg")"
+    done
+
+    case "${_CMD_ARGS[0]:-}" in
+        shell)
+            exec ssh "${_REMOTE_SSH_OPTS[@]}" -t "$_REMOTE_HOST" "$_REMOTE_CMD"
+            ;;
+        *)
+            exec ssh "${_REMOTE_SSH_OPTS[@]}" "$_REMOTE_HOST" "$_REMOTE_CMD"
+            ;;
+    esac
+fi
 
 # --- Main dispatch ---
 
