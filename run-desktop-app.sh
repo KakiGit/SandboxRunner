@@ -221,6 +221,145 @@ cmd_logs() {
     podman logs "$PERSISTENT_CONTAINER"
 }
 
+# --- Remote deployment via SSH ---
+
+cmd_deploy() {
+    local REMOTE_HOST=""
+    local REMOTE_DIR="~/vol_ubuntu"
+    local BUILD=false
+    local START=true
+    local VNC_PORT=${VNC_PORT:-5901}
+    local VNC_PASSWORD=${VNC_PASSWORD:-ubuntu}
+    local VNC_GEOMETRY=${VNC_GEOMETRY:-1920x1080}
+    local SSH_OPTS=()
+    local APP_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -b|--build)           BUILD=true; shift ;;
+            --no-start)           START=false; shift ;;
+            --vnc-port)           VNC_PORT="$2"; shift 2 ;;
+            --vnc-password)       VNC_PASSWORD="$2"; shift 2 ;;
+            --vnc-geometry)       VNC_GEOMETRY="$2"; shift 2 ;;
+            --remote-dir)         REMOTE_DIR="$2"; shift 2 ;;
+            -n|--name)            PERSISTENT_CONTAINER="$2"; shift 2 ;;
+            -o|--ssh-opt)         SSH_OPTS+=(-o "$2"); shift 2 ;;
+            -i|--identity)        SSH_OPTS+=(-i "$2"); shift 2 ;;
+            -p|--port)            SSH_OPTS+=(-p "$2"); shift 2 ;;
+            -*)                   echo "Unknown option: $1"; exit 1 ;;
+            *)
+                if [ -z "$REMOTE_HOST" ]; then
+                    REMOTE_HOST="$1"
+                else
+                    APP_ARGS+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$REMOTE_HOST" ]; then
+        echo "Usage: ./run-desktop-app.sh deploy <user@host> [options] [app]"
+        echo ""
+        echo "Options:"
+        echo "  -b, --build             Force rebuild the image on remote"
+        echo "  --no-start              Only sync files and build; don't start"
+        echo "  --remote-dir DIR        Remote directory (default: ~/vol_ubuntu)"
+        echo "  --vnc-port PORT         VNC port (default: 5901)"
+        echo "  --vnc-password PASS     VNC password (default: ubuntu)"
+        echo "  --vnc-geometry WxH      Resolution (default: 1920x1080)"
+        echo "  -n, --name NAME         Container name"
+        echo "  -i, --identity KEY      SSH identity file"
+        echo "  -p, --port PORT         SSH port"
+        echo "  -o, --ssh-opt OPT       Extra SSH option"
+        echo ""
+        echo "Examples:"
+        echo "  ./run-desktop-app.sh deploy user@myserver"
+        echo "  ./run-desktop-app.sh deploy user@myserver -b firefox"
+        echo "  ./run-desktop-app.sh deploy user@myserver -i ~/.ssh/id_rsa --vnc-port 5902"
+        exit 1
+    fi
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    echo "=== Deploying to $REMOTE_HOST ==="
+
+    # Step 1: Sync project files to remote host
+    echo ""
+    echo "[1/3] Syncing project files to ${REMOTE_HOST}:${REMOTE_DIR} ..."
+
+    local RSYNC_SSH_CMD="ssh"
+    if [ ${#SSH_OPTS[@]} -gt 0 ]; then
+        RSYNC_SSH_CMD="ssh ${SSH_OPTS[*]}"
+    fi
+
+    # Create remote directory
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p $REMOTE_DIR"
+
+    rsync -az --delete \
+        --exclude '.git' \
+        --exclude '.gitignore' \
+        -e "$RSYNC_SSH_CMD" \
+        "$SCRIPT_DIR/" "${REMOTE_HOST}:${REMOTE_DIR}/"
+
+    echo "  Files synced."
+
+    # Step 2: Build image on remote host
+    echo ""
+    echo "[2/3] Building container image on remote host..."
+
+    local REMOTE_BUILD_CMD
+    if $BUILD; then
+        REMOTE_BUILD_CMD="cd $REMOTE_DIR && podman build -t $IMAGE_NAME ."
+    else
+        REMOTE_BUILD_CMD="cd $REMOTE_DIR && podman image exists $IMAGE_NAME 2>/dev/null || podman build -t $IMAGE_NAME ."
+    fi
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$REMOTE_BUILD_CMD"
+    echo "  Image ready."
+
+    # Step 3: Start the container on remote host
+    if ! $START; then
+        echo ""
+        echo "Files synced and image built. Skipping container start (--no-start)."
+        echo "SSH into the remote host and run:"
+        echo "  cd $REMOTE_DIR && ./run-desktop-app.sh start ${APP_ARGS[*]}"
+        return 0
+    fi
+
+    echo ""
+    echo "[3/3] Starting container on remote host..."
+
+    local START_CMD="cd $REMOTE_DIR && ./run-desktop-app.sh start"
+    START_CMD+=" --vnc-port $VNC_PORT"
+    START_CMD+=" --vnc-password $VNC_PASSWORD"
+    START_CMD+=" --vnc-geometry $VNC_GEOMETRY"
+    START_CMD+=" -n $PERSISTENT_CONTAINER"
+    if [ ${#APP_ARGS[@]} -gt 0 ]; then
+        START_CMD+=" ${APP_ARGS[*]}"
+    fi
+
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$START_CMD"
+
+    echo ""
+    echo "========================================="
+    echo " Deployed to $REMOTE_HOST"
+    echo "========================================="
+    echo ""
+    echo " To connect, set up an SSH tunnel and VNC:"
+    echo ""
+    echo "   ssh ${SSH_OPTS[*]} -L ${VNC_PORT}:localhost:${VNC_PORT} $REMOTE_HOST"
+    echo "   vncviewer localhost:${VNC_PORT}"
+    echo ""
+    echo " VNC password: $VNC_PASSWORD"
+    echo ""
+    echo " To manage the remote container:"
+    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh status'"
+    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh run <app>'"
+    echo "   ssh ${SSH_OPTS[*]} $REMOTE_HOST 'cd $REMOTE_DIR && ./run-desktop-app.sh stop'"
+    echo "========================================="
+}
+
 # --- Direct X11 mode (original behavior) ---
 
 cmd_direct() {
@@ -329,6 +468,21 @@ Persistent mode (VNC desktop — survives SSH disconnects):
     --vnc-password PASS   VNC password (default: ubuntu)
     --vnc-geometry WxH    Screen resolution (default: 1920x1080)
 
+Remote deployment (deploy and start on a remote host via SSH):
+  deploy <user@host> [app]   Sync files, build image, and start on remote
+
+  Deploy options:
+    -b, --build           Force rebuild the image on remote
+    --no-start            Only sync and build; don't start container
+    --remote-dir DIR      Remote directory (default: ~/vol_ubuntu)
+    --vnc-port PORT       VNC port (default: 5901)
+    --vnc-password PASS   VNC password (default: ubuntu)
+    --vnc-geometry WxH    Screen resolution (default: 1920x1080)
+    -n, --name NAME       Custom container name
+    -i, --identity KEY    SSH identity file
+    -p, --port PORT       SSH port
+    -o, --ssh-opt OPT     Extra SSH option (e.g. StrictHostKeyChecking=no)
+
 Direct X11 mode (requires X11 forwarding, no persistence):
   <application>    Run an app with X11 forwarding (original behavior)
   -b, --build      Build image first
@@ -336,6 +490,14 @@ Direct X11 mode (requires X11 forwarding, no persistence):
   -n, --name NAME  Custom container name
 
 Examples:
+  # Remote deployment (one command from local machine):
+  ./run-desktop-app.sh deploy user@myserver firefox
+  ./run-desktop-app.sh deploy user@myserver -b --vnc-port 5902
+  ./run-desktop-app.sh deploy user@myserver -i ~/.ssh/id_rsa
+  # Then connect:
+  ssh -L 5901:localhost:5901 user@myserver
+  vncviewer localhost:5901
+
   # Persistent mode (recommended for remote SSH):
   ./run-desktop-app.sh start firefox             # Start desktop with firefox
   ./run-desktop-app.sh run chromium-browser       # Launch another app
@@ -365,6 +527,7 @@ case "${1:-}" in
     shell)   shift; cmd_shell "$@" ;;
     status)  shift; cmd_status "$@" ;;
     logs)    shift; cmd_logs "$@" ;;
+    deploy)  shift; cmd_deploy "$@" ;;
     -h|--help)  show_help ;;
     "")         show_help ;;
     *)          cmd_direct "$@" ;;
